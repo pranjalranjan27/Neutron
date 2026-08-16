@@ -1,0 +1,20 @@
+{
+  "name": "neutron",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A sci-fi interactive 3D neutron core controlled by hand gestures",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "three": "^0.170.0",
+    "@mediapipe/hands": "^0.4.1675469240",
+    "@mediapipe/camera_utils": "^0.3.1675466862"
+  }
+}

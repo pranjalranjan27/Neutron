@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="NEUTRON — Interactive 3D energy core controlled by hand gestures">
+  <title>NEUTRON</title>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <canvas id="neutron-canvas"></canvas>
+
+  <!-- Hidden video element for webcam (never displayed) -->
+  <video id="webcam" autoplay playsinline style="display:none;"></video>
+
+  <div id="status">Initializing...</div>
+  <div id="debug-ui" style="display: none;"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
