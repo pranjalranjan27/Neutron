@@ -115,7 +115,7 @@ class HandState {
 
         // Smooth openness with EMA
         const rawOpenness = calculateHandOpenness(handObj.landmarks);
-        this.openness = this.openness === 0 ? rawOpenness : this.openness * 0.7 + rawOpenness * 0.3;
+        this.openness = this.openness === 0 ? rawOpenness : this.openness * 0.5 + rawOpenness * 0.5;
 
         // Depth proxy based on 2D size
         const wrist = handObj.landmarks[0];

@@ -1,51 +1,50 @@
 /**
- * neutron.js — The Neutron Core: a shader-driven energy sphere.
+ * neutron.js — The Neutron Core: shader-driven energy sphere with runic rings.
  *
- * Replaces the previous particle-swarm dual-core system with a single
- * persistent energy ball at the world origin. Visual structure is a custom
- * ShaderMaterial on an icosphere, with a decorative particle layer for
- * ambient sparks.
+ * Visual elements:
+ *  1. Bright plasma core sphere (IcosahedronGeometry + ShaderMaterial)
+ *  2. Three rotating runic rings (TorusGeometry + ShaderMaterial)
+ *  3. Energy nebula shell (IcosahedronGeometry + transparent ShaderMaterial)
+ *  4. Decorative spark particles (Points + ShaderMaterial)
+ *
+ * Position is always fixed at (0,0,0). Scale and rotation driven by gestures.
  */
 import * as THREE from 'three';
 
 // ── Palette ──────────────────────────────────────────────────────────
-const NEUTRON_GREEN = new THREE.Color(0.4, 1.0, 0.5);
+const NEUTRON_GREEN = new THREE.Color(0.2, 1.0, 0.3);
+const CORE_COLOR_VEC = new THREE.Vector3(0.2, 1.0, 0.3);
 
 // ── Scale tuning ─────────────────────────────────────────────────────
-const MIN_SCALE         = 0.3;
+const MIN_SCALE         = 0.25;
 const NORMAL_SCALE      = 1.0;
-const MAX_SCALE         = 1.8;
+const MAX_SCALE         = 2.5;
+const MAX_ONE_HAND_SCALE = 1.3;   // one hand can expand slightly beyond normal
 
 // Two-hand distance thresholds (normalized webcam coords, ~0–2 range)
-const MIN_HAND_DIST     = 0.08;   // hands nearly touching
-const MAX_HAND_DIST     = 0.80;   // hands far apart
+const MIN_HAND_DIST     = 0.05;
+const MAX_HAND_DIST     = 1.0;
 
 // Interpolation speeds
-const SCALE_LERP_SPEED    = 6.0;
-const ROTATION_LERP_SPEED = 5.0;
+const SCALE_LERP_SPEED    = 10.0;
+const ROTATION_LERP_SPEED = 6.0;
 
-// ── Decorative particle config ───────────────────────────────────────
-const SPARK_COUNT = 600;
+// Particle counts
+const SPARK_COUNT  = 500;
 
-// ── Simplex-style 3D noise (GLSL) ────────────────────────────────────
-// Compact permutation-based noise for the vertex/fragment shaders.
+// ── Classic Perlin 3D noise (GLSL) ───────────────────────────────────
 const GLSL_NOISE = /* glsl */ `
-//  Classic Perlin 3D noise — adapted from Stefan Gustavson's GLSL implementation.
 vec4 permute(vec4 x) { return mod(((x * 34.0) + 1.0) * x, 289.0); }
 vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
 vec3 fade(vec3 t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }
 
 float cnoise(vec3 P) {
-  vec3 Pi0 = floor(P);
-  vec3 Pi1 = Pi0 + vec3(1.0);
-  Pi0 = mod(Pi0, 289.0);
-  Pi1 = mod(Pi1, 289.0);
-  vec3 Pf0 = fract(P);
-  vec3 Pf1 = Pf0 - vec3(1.0);
+  vec3 Pi0 = floor(P); vec3 Pi1 = Pi0 + vec3(1.0);
+  Pi0 = mod(Pi0, 289.0); Pi1 = mod(Pi1, 289.0);
+  vec3 Pf0 = fract(P); vec3 Pf1 = Pf0 - vec3(1.0);
   vec4 ix = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
   vec4 iy = vec4(Pi0.yy, Pi1.yy);
-  vec4 iz0 = Pi0.zzzz;
-  vec4 iz1 = Pi1.zzzz;
+  vec4 iz0 = Pi0.zzzz; vec4 iz1 = Pi1.zzzz;
   vec4 ixy  = permute(permute(ix) + iy);
   vec4 ixy0 = permute(ixy + iz0);
   vec4 ixy1 = permute(ixy + iz1);
@@ -91,20 +90,22 @@ float cnoise(vec3 P) {
 }
 `;
 
-// ── Vertex Shader ────────────────────────────────────────────────────
-const vertexShader = /* glsl */ `
+// ═══════════════════════════════════════════════════════════════════════
+//  CORE SPHERE SHADERS — bright plasma with high contrast
+// ═══════════════════════════════════════════════════════════════════════
+
+const coreVertexShader = /* glsl */ `
 ${GLSL_NOISE}
 
 uniform float uTime;
-uniform float uScale;
 uniform float uTurbulence;
 
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying float vDisplacement;
+varying vec3 vObjPos;
 
 void main() {
-    // Layered noise displacement along normal
     vec3 noisePos = position * 2.0 + uTime * 0.4;
     float n1 = cnoise(noisePos) * 0.5;
     float n2 = cnoise(noisePos * 2.5 + 100.0) * 0.25;
@@ -112,11 +113,9 @@ void main() {
     float displacement = (n1 + n2 + n3) * uTurbulence;
 
     vDisplacement = displacement;
+    vObjPos = position;
 
     vec3 newPos = position + normal * displacement;
-
-    // Apply core scale
-    newPos *= uScale;
 
     vNormal = normalize(normalMatrix * normal);
     vPosition = (modelViewMatrix * vec4(newPos, 1.0)).xyz;
@@ -125,138 +124,357 @@ void main() {
 }
 `;
 
-// ── Fragment Shader ──────────────────────────────────────────────────
-const fragmentShader = /* glsl */ `
+const coreFragmentShader = /* glsl */ `
 ${GLSL_NOISE}
 
 uniform float uTime;
 uniform float uPulseIntensity;
 uniform vec3  uColor;
-uniform float uTurbulence;
 
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying float vDisplacement;
+varying vec3 vObjPos;
 
 void main() {
     vec3 viewDir = normalize(-vPosition);
 
-    // Fresnel rim glow
-    float fresnel = pow(1.0 - max(dot(viewDir, vNormal), 0.0), 2.5);
+    // Fresnel rim
+    float fresnel = pow(1.0 - max(dot(viewDir, vNormal), 0.0), 2.0);
 
-    // Noise-driven energy bands
-    float colorNoise1 = cnoise(vNormal * 4.0 + uTime * 0.5) * 0.5;
-    float colorNoise2 = cnoise(vNormal * 8.0 - uTime * 0.8) * 0.25;
-    float combinedNoise = colorNoise1 + colorNoise2;
+    // Large-scale cloud pattern
+    float cloud = cnoise(vObjPos * 1.5 + uTime * 0.25) * 0.5 + 0.5;
 
-    // Base energy color with noise variation
-    vec3 baseColor = uColor * (0.4 + combinedNoise * 0.35);
+    // Fine detail noise
+    float detail1 = cnoise(vObjPos * 4.0 + uTime * 0.45);
+    float detail2 = cnoise(vObjPos * 8.0 - uTime * 0.6);
+    float detail = detail1 * 0.4 + detail2 * 0.2;
 
-    // Dark energy veins where noise dips low
-    vec3 veinColor = uColor * vec3(0.06, 0.18, 0.1);
-    float veinMask = smoothstep(-0.1, 0.3, -combinedNoise);
-    baseColor = mix(baseColor, veinColor, veinMask * 0.7);
+    // Combined energy level for high-contrast surface
+    float energyLevel = cloud + detail;
+
+    // Dark vein mask (where energy dips very low)
+    float darkMask = smoothstep(0.35, 0.05, energyLevel);
+    // Bright plasma mask (where energy peaks)
+    float brightMask = smoothstep(0.55, 1.0, energyLevel);
+    // White-hot highlight mask (very peak areas)
+    float hotMask = smoothstep(0.85, 1.1, energyLevel);
+
+    // Color palette
+    vec3 darkColor   = vec3(0.0, 0.02, 0.0);
+    vec3 midColor    = uColor * 0.2;
+    vec3 brightColor = vec3(0.3, 0.7, 0.35);
+    vec3 hotColor    = vec3(0.6, 1.0, 0.7);
+
+    // Build surface color with high contrast
+    vec3 surfaceColor = midColor;
+    surfaceColor = mix(surfaceColor, brightColor, brightMask);
+    surfaceColor = mix(surfaceColor, darkColor, darkMask);
+    surfaceColor = mix(surfaceColor, hotColor, hotMask * 0.6);
+
+    // Displacement modulates brightness
+    surfaceColor *= (1.0 + vDisplacement * 2.5);
 
     // Pulsing
-    float pulse = 1.0 + sin(uTime * 2.5) * uPulseIntensity * 0.12
-                      + sin(uTime * 5.7) * uPulseIntensity * 0.05;
+    float pulse = 1.0 + sin(uTime * 2.5) * uPulseIntensity * 0.1
+                      + sin(uTime * 5.7) * uPulseIntensity * 0.04;
+    surfaceColor *= pulse;
 
-    // Displacement-driven brightness variation
-    float coreBrightness = 0.8 + clamp(vDisplacement * 2.5, -0.3, 0.5);
+    // Fresnel rim glow — bright green edge
+    surfaceColor += uColor * fresnel * 0.35;
 
-    vec3 color = baseColor * coreBrightness * pulse;
+    // Subtle inner brightening
+    float inner = pow(max(dot(viewDir, vNormal), 0.0), 4.0);
+    surfaceColor += uColor * inner * 0.06;
 
-    // Pronounced fresnel rim glow — key to the energy orb look
-    color += uColor * fresnel * 0.45;
+    gl_FragColor = vec4(surfaceColor, 1.0);
+}
+`;
 
-    // Subtle inner brightening, green-tinted
-    float innerGlow = pow(max(dot(viewDir, vNormal), 0.0), 6.0);
-    color += uColor * innerGlow * 0.08;
+// ═══════════════════════════════════════════════════════════════════════
+//  RUNIC RING SHADERS
+// ═══════════════════════════════════════════════════════════════════════
 
+const ringVertexShader = /* glsl */ `
+${GLSL_NOISE}
+
+uniform float uTime;
+
+varying vec2 vUv;
+
+void main() {
+    vUv = uv;
+
+    // Wavy displacement — push each point along its normal with noise
+    // Use position along circumference (uv.x) and time for animation
+    vec3 noiseCoord = position * 1.8 + uTime * vec3(0.3, 0.2, 0.25);
+    float wave1 = cnoise(noiseCoord) * 0.06;
+    float wave2 = cnoise(noiseCoord * 2.5 + 50.0) * 0.03;
+    float wave3 = sin(uv.x * 6.2832 * 8.0 + uTime * 1.5) * 0.015;
+
+    // Compute a rough normal for the torus (radial outward from tube center)
+    vec3 tubeNormal = normalize(position);
+    vec3 displaced = position + tubeNormal * (wave1 + wave2 + wave3);
+
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
+}
+`;
+
+const ringFragmentShader = /* glsl */ `
+uniform float uTime;
+uniform vec3  uColor;
+uniform float uBrightness;
+
+varying vec2 vUv;
+
+void main() {
+    float u = vUv.x; // position around circumference 0-1
+
+    // Animated rune pattern — multiple sine frequencies for glyph-like complexity
+    float r1 = sin(u * 40.0 * 6.2832 + uTime * 0.5) * 0.3;
+    float r2 = sin(u * 24.0 * 6.2832 - uTime * 0.3) * 0.25;
+    float r3 = sin(u * 56.0 * 6.2832 + uTime * 0.7) * 0.15;
+    float r4 = sin(u * 12.0 * 6.2832 + uTime * 0.15) * 0.2;
+    float runePattern = clamp(0.5 + r1 + r2 + r3 + r4, 0.0, 1.0);
+
+    // Segmented gaps between rune groups
+    float seg = fract(u * 16.0 + uTime * 0.04);
+    float segMask = smoothstep(0.02, 0.08, seg) * smoothstep(0.98, 0.92, seg);
+
+    // Cardinal diamond accents at 0°, 90°, 180°, 270°
+    float d0 = min(abs(u), 1.0 - u);
+    float d1 = abs(u - 0.25);
+    float d2 = abs(u - 0.5);
+    float d3 = abs(u - 0.75);
+    float minD = min(min(d0, d1), min(d2, d3));
+    float cardinal = smoothstep(0.018, 0.0, minD);
+
+    // Tube cross-section glow (brightest at tube center)
+    float v = vUv.y;
+    float tubeGlow = smoothstep(1.0, 0.2, abs(v - 0.5) * 2.0);
+
+    float brightness = (runePattern * segMask * 0.25 + 0.04 + cardinal * 0.6) * tubeGlow * uBrightness;
+
+    vec3 color = uColor * brightness;
     gl_FragColor = vec4(color, 1.0);
 }
 `;
 
-// ── Spark Vertex Shader ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+//  NEBULA SHELL SHADERS — wispy energy tendrils
+// ═══════════════════════════════════════════════════════════════════════
+
+const nebulaVertexShader = /* glsl */ `
+${GLSL_NOISE}
+
+uniform float uTime;
+
+varying vec3 vNormal;
+varying vec3 vPosition;
+varying vec3 vWorldPos;
+
+void main() {
+    // Displacement for organic flowing shape
+    vec3 noiseCoord = position * 0.8 + uTime * vec3(0.1, 0.12, 0.08);
+    float displacement = cnoise(noiseCoord) * 0.5 + cnoise(noiseCoord * 2.0) * 0.25;
+
+    vec3 newPos = position + normal * displacement;
+
+    vNormal = normalize(normalMatrix * normal);
+    vPosition = (modelViewMatrix * vec4(newPos, 1.0)).xyz;
+    vWorldPos = position;
+
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(newPos, 1.0);
+}
+`;
+
+const nebulaFragmentShader = /* glsl */ `
+${GLSL_NOISE}
+
+uniform float uTime;
+uniform vec3  uColor;
+
+varying vec3 vNormal;
+varying vec3 vPosition;
+varying vec3 vWorldPos;
+
+void main() {
+    vec3 viewDir = normalize(-vPosition);
+    float fresnel = pow(1.0 - max(dot(viewDir, vNormal), 0.0), 1.5);
+
+    // Multi-layer noise for wisp pattern
+    float n1 = cnoise(vWorldPos * 1.2 + uTime * vec3(0.12, 0.15, 0.08));
+    float n2 = cnoise(vWorldPos * 2.5 + uTime * vec3(-0.08, 0.1, 0.12));
+    float n3 = cnoise(vWorldPos * 0.6 + uTime * vec3(0.05, -0.07, 0.1));
+    float wispPattern = n1 * 0.5 + n2 * 0.3 + n3 * 0.2;
+
+    // Show wisps where noise is above a threshold
+    float wispMask = smoothstep(0.0, 0.4, wispPattern);
+
+    // Alpha: visible where wisps exist AND at silhouette edges
+    float alpha = wispMask * fresnel * 0.12;
+
+    vec3 color = uColor * (0.3 + wispPattern * 0.4);
+
+    gl_FragColor = vec4(color, alpha);
+}
+`;
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SPARK PARTICLE SHADERS
+// ═══════════════════════════════════════════════════════════════════════
+
 const sparkVertexShader = /* glsl */ `
 attribute float aSize;
 attribute float aAlpha;
-
 varying float vAlpha;
-
 void main() {
     vAlpha = aAlpha;
     vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-    gl_PointSize = aSize * (80.0 / -mvPos.z);
+    gl_PointSize = aSize * (100.0 / -mvPos.z);
     gl_Position = projectionMatrix * mvPos;
 }
 `;
 
-// ── Spark Fragment Shader ────────────────────────────────────────────
 const sparkFragmentShader = /* glsl */ `
 uniform vec3 uColor;
 varying float vAlpha;
-
 void main() {
-    // Soft circular particle
     float d = length(gl_PointCoord - vec2(0.5));
     if (d > 0.5) discard;
-    float alpha = vAlpha * smoothstep(0.5, 0.2, d);
+    float alpha = vAlpha * smoothstep(0.5, 0.15, d);
     gl_FragColor = vec4(uColor, alpha);
 }
 `;
 
 
-// ═════════════════════════════════════════════════════════════════════
-// NeutronCore class
-// ═════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+//  NeutronCore class
+// ═══════════════════════════════════════════════════════════════════════
 export class NeutronCore {
     constructor(scene) {
         this.scene = scene;
 
-        // ── Single core state (always at origin) ─────────────────────
-        this.scale           = NORMAL_SCALE;
-        this.targetScale     = NORMAL_SCALE;
-        this.rotation        = 0;       // current interpolated angular velocity
-        this.targetRotation  = 0;
-        this.cumulativeRot   = 0;       // accumulated angle for mesh.rotation.y
+        // ── Master group for uniform scaling ──────────────────────────
+        this.group = new THREE.Group();
+        this.group.position.set(0, 0, 0); // Fixed at origin — never moves
+        scene.add(this.group);
 
-        // ── Energy sphere ────────────────────────────────────────────
+        // ── State ────────────────────────────────────────────────────
+        this.scale          = NORMAL_SCALE;
+        this.targetScale    = NORMAL_SCALE;
+        this.rotation       = 0;
+        this.targetRotation = 0;
+        this.cumulativeRot  = 0;
+        this.time           = 0;
+        this._noHandTimer   = 0;
+
+        // ── Create visual elements ───────────────────────────────────
         this._initEnergySphere();
+        this._initRunicRings();
+        this._initEnergyNebula();
+        this._initSparks();
 
         // ── Point light for local glow ───────────────────────────────
-        this.glowLight = new THREE.PointLight(NEUTRON_GREEN, 1.5, 8);
+        this.glowLight = new THREE.PointLight(NEUTRON_GREEN, 2.0, 10);
         this.glowLight.position.set(0, 0, 0);
         scene.add(this.glowLight);
-
-        // ── Decorative spark particles ───────────────────────────────
-        this._initSparks();
     }
 
-    // ─── Energy Sphere Setup ─────────────────────────────────────────
+    // ─── Energy Sphere (Core) ────────────────────────────────────────
     _initEnergySphere() {
         const geo = new THREE.IcosahedronGeometry(1, 64);
 
-        this.uniforms = {
+        this.coreUniforms = {
             uTime:           { value: 0 },
-            uScale:          { value: NORMAL_SCALE },
-            uTurbulence:     { value: 0.12 },
+            uTurbulence:     { value: 0.15 },
             uPulseIntensity: { value: 1.0 },
-            uColor:          { value: new THREE.Vector3(NEUTRON_GREEN.r, NEUTRON_GREEN.g, NEUTRON_GREEN.b) },
+            uColor:          { value: CORE_COLOR_VEC.clone() },
         };
 
         const mat = new THREE.ShaderMaterial({
-            vertexShader,
-            fragmentShader,
-            uniforms: this.uniforms,
+            vertexShader: coreVertexShader,
+            fragmentShader: coreFragmentShader,
+            uniforms: this.coreUniforms,
             transparent: false,
             depthWrite: true,
             side: THREE.FrontSide,
         });
 
         this.mesh = new THREE.Mesh(geo, mat);
-        this.mesh.position.set(0, 0, 0);   // Fixed at origin — never moves
-        this.scene.add(this.mesh);
+        this.group.add(this.mesh);
+    }
+
+    // ─── Runic Rings ─────────────────────────────────────────────────
+    _initRunicRings() {
+        this.rings = [];
+
+        // multiplier: each ring tracks hand rotation at a different rate
+        // so they fan out during rotation rather than moving in lockstep
+        const ringConfigs = [
+            { radius: 1.35, tube: 0.025, tiltX: 0.12, tiltY: 0.0,   multiplier:  1.0,  brightness: 1.0 },
+            { radius: 1.60, tube: 0.020, tiltX: -0.08, tiltY: 0.12, multiplier: -0.7, brightness: 0.8 },
+            { radius: 1.90, tube: 0.018, tiltX: 0.05, tiltY: -0.1,  multiplier:  0.45, brightness: 0.6 },
+        ];
+
+        for (const cfg of ringConfigs) {
+            const geo = new THREE.TorusGeometry(cfg.radius, cfg.tube, 12, 256);
+
+            const uniforms = {
+                uTime:       { value: 0 },
+                uColor:      { value: CORE_COLOR_VEC.clone() },
+                uBrightness: { value: cfg.brightness },
+            };
+
+            const mat = new THREE.ShaderMaterial({
+                vertexShader: ringVertexShader,
+                fragmentShader: ringFragmentShader,
+                uniforms,
+                transparent: false,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                side: THREE.DoubleSide,
+            });
+
+            const ringMesh = new THREE.Mesh(geo, mat);
+
+            // Apply tilt
+            ringMesh.rotation.x = cfg.tiltX;
+            ringMesh.rotation.y = cfg.tiltY;
+
+            this.group.add(ringMesh);
+
+            this.rings.push({
+                mesh: ringMesh,
+                uniforms,
+                multiplier: cfg.multiplier,
+                baseTiltX: cfg.tiltX,
+                baseTiltY: cfg.tiltY,
+            });
+        }
+    }
+
+    // ─── Energy Nebula Shell ─────────────────────────────────────────
+    _initEnergyNebula() {
+        const geo = new THREE.IcosahedronGeometry(2.8, 5);
+
+        this.nebulaUniforms = {
+            uTime:  { value: 0 },
+            uColor: { value: CORE_COLOR_VEC.clone() },
+        };
+
+        const mat = new THREE.ShaderMaterial({
+            vertexShader: nebulaVertexShader,
+            fragmentShader: nebulaFragmentShader,
+            uniforms: this.nebulaUniforms,
+            transparent: true,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+        });
+
+        this.nebula = new THREE.Mesh(geo, mat);
+        this.group.add(this.nebula);
     }
 
     // ─── Decorative Spark Particles ──────────────────────────────────
@@ -265,29 +483,27 @@ export class NeutronCore {
         const sizes     = new Float32Array(SPARK_COUNT);
         const alphas    = new Float32Array(SPARK_COUNT);
 
-        // Per-spark persistent data for animation
         this.sparkData = [];
 
         for (let i = 0; i < SPARK_COUNT; i++) {
-            // Random spherical distribution outside the core surface
             const theta = Math.random() * Math.PI * 2;
             const phi   = Math.acos(2 * Math.random() - 1);
-            const r     = 1.15 + Math.random() * 1.0;   // further outside sphere
+            const r     = 1.2 + Math.random() * 2.5; // spread from near-surface to outer
 
             positions[i * 3]     = r * Math.sin(phi) * Math.cos(theta);
             positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
             positions[i * 3 + 2] = r * Math.cos(phi);
 
-            sizes[i]  = 0.4 + Math.random() * 0.8;   // small wisps
-            alphas[i] = 0.08 + Math.random() * 0.2;   // subtle but visible
+            sizes[i]  = 0.3 + Math.random() * 0.8;
+            alphas[i] = 0.05 + Math.random() * 0.2;
 
             this.sparkData.push({
-                baseR:    r,
-                theta:    theta,
-                phi:      phi,
-                speed:    0.2 + Math.random() * 0.6,      // orbital speed
-                drift:    (Math.random() - 0.5) * 0.3,    // radial drift
-                phase:    Math.random() * Math.PI * 2,
+                baseR:     r,
+                theta:     theta,
+                phi:       phi,
+                speed:     0.15 + Math.random() * 0.5,
+                drift:     (Math.random() - 0.5) * 0.2,
+                phase:     Math.random() * Math.PI * 2,
                 baseAlpha: alphas[i],
             });
         }
@@ -301,7 +517,7 @@ export class NeutronCore {
             vertexShader:   sparkVertexShader,
             fragmentShader: sparkFragmentShader,
             uniforms: {
-                uColor: { value: new THREE.Vector3(NEUTRON_GREEN.r, NEUTRON_GREEN.g, NEUTRON_GREEN.b) },
+                uColor: { value: CORE_COLOR_VEC.clone() },
             },
             transparent: true,
             blending: THREE.AdditiveBlending,
@@ -309,47 +525,52 @@ export class NeutronCore {
         });
 
         this.sparks = new THREE.Points(geo, mat);
-        this.sparks.position.set(0, 0, 0);   // Also fixed at origin
-        this.scene.add(this.sparks);
+        this.group.add(this.sparks);
     }
 
     // ─── Per-Frame Update ────────────────────────────────────────────
     update(gesture, deltaTime) {
-        if (deltaTime > 0.1) deltaTime = 0.1; // Cap to prevent physics jumps
+        if (deltaTime > 0.1) deltaTime = 0.1;
 
         const h0 = gesture.hands[0];
         const h1 = gesture.hands[1];
         const validHands = gesture.validHands;
 
+        this.time += deltaTime;
+
         // ── SCALE ────────────────────────────────────────────────────
         if (validHands === 0) {
-            // No hands → decay to resting scale
-            this.targetScale = NORMAL_SCALE;
-        } else if (validHands === 2) {
-            // Two hands: distance between them drives scale
-            const dist = gesture.distance;
-            // Smoothstep mapping: [MIN_HAND_DIST, MAX_HAND_DIST] → [MIN_SCALE, MAX_SCALE]
-            const t = THREE.MathUtils.clamp(
-                (dist - MIN_HAND_DIST) / (MAX_HAND_DIST - MIN_HAND_DIST),
-                0, 1
-            );
-            // Smoothstep for a more natural feel
-            const smooth = t * t * (3 - 2 * t);
-            this.targetScale = THREE.MathUtils.lerp(MIN_SCALE, MAX_SCALE, smooth);
+            // Delay before resetting to prevent tracking-drop snaps
+            this._noHandTimer += deltaTime;
+            if (this._noHandTimer > 0.3) {
+                this.targetScale = NORMAL_SCALE;
+            }
         } else {
-            // One hand: openness drives scale (existing behavior preserved)
-            const mainHand = h0.active ? h0 : h1;
-            this.targetScale = THREE.MathUtils.lerp(MIN_SCALE, NORMAL_SCALE, mainHand.openness);
+            this._noHandTimer = 0;
+
+            if (validHands === 2) {
+                // Two hands: distance drives scale
+                const dist = gesture.distance;
+                const t = THREE.MathUtils.clamp(
+                    (dist - MIN_HAND_DIST) / (MAX_HAND_DIST - MIN_HAND_DIST), 0, 1
+                );
+                const smooth = t * t * (3 - 2 * t);
+                this.targetScale = THREE.MathUtils.lerp(MIN_SCALE, MAX_SCALE, smooth);
+            } else {
+                // One hand: openness drives scale
+                const mainHand = h0.active ? h0 : h1;
+                this.targetScale = THREE.MathUtils.lerp(MIN_SCALE, MAX_ONE_HAND_SCALE, mainHand.openness);
+            }
         }
 
-        // Smooth interpolation — never snaps
         this.scale = THREE.MathUtils.lerp(this.scale, this.targetScale, deltaTime * SCALE_LERP_SPEED);
 
         // ── ROTATION ─────────────────────────────────────────────────
         if (validHands === 0) {
-            this.targetRotation = 0;
+            if (this._noHandTimer > 0.3) {
+                this.targetRotation = 0;
+            }
         } else if (validHands === 2) {
-            // Use whichever hand has larger angular signal
             if (Math.abs(h0.angularVelocity) > Math.abs(h1.angularVelocity)) {
                 this.targetRotation = h0.angularVelocity;
             } else {
@@ -363,42 +584,54 @@ export class NeutronCore {
         this.rotation = THREE.MathUtils.lerp(this.rotation, this.targetRotation, deltaTime * ROTATION_LERP_SPEED);
         this.cumulativeRot += this.rotation * deltaTime;
 
-        // ── APPLY TO MESH ────────────────────────────────────────────
-        // Position: always (0,0,0) — never set, never changed.
+        // ── APPLY TO VISUALS ─────────────────────────────────────────
+
+        // Scale the entire group
+        this.group.scale.setScalar(this.scale);
+
+        // Core sphere rotation (from hand gesture)
         this.mesh.rotation.y = this.cumulativeRot;
 
-        // Shader uniforms
-        this.uniforms.uTime.value += deltaTime;
-        this.uniforms.uScale.value = this.scale;
-
-        // More turbulence when compressed, calmer when expanded
-        const turbulenceBase = 0.12;
+        // Core shader uniforms
+        this.coreUniforms.uTime.value = this.time;
+        const turbulenceBase = 0.15;
         const compressionFactor = THREE.MathUtils.clamp(1.0 - (this.scale - MIN_SCALE) / (NORMAL_SCALE - MIN_SCALE), 0, 1);
-        this.uniforms.uTurbulence.value = turbulenceBase + compressionFactor * 0.10;
+        this.coreUniforms.uTurbulence.value = turbulenceBase + compressionFactor * 0.12;
+        this.coreUniforms.uPulseIntensity.value = validHands > 0 ? 1.2 : 0.8;
 
-        // Pulse intensity ramps up slightly when active
-        this.uniforms.uPulseIntensity.value = validHands > 0 ? 1.2 : 0.8;
+        // ── Ring rotation (hand-driven) ──────────────────────────────
+        for (const ring of this.rings) {
+            ring.mesh.rotation.x = ring.baseTiltX;
+            ring.mesh.rotation.y = ring.baseTiltY;
+            // Rings follow hand rotation at their own multiplier rate
+            ring.mesh.rotation.z = this.cumulativeRot * ring.multiplier;
+            ring.uniforms.uTime.value = this.time;
+        }
 
-        // Glow light intensity tracks scale
-        this.glowLight.intensity = 1.0 + this.scale * 1.0;
+        // ── Nebula ───────────────────────────────────────────────────
+        this.nebulaUniforms.uTime.value = this.time;
+        this.nebula.rotation.y = this.time * 0.03; // very slow drift
 
-        // ── UPDATE SPARKS ────────────────────────────────────────────
+        // ── Glow light ───────────────────────────────────────────────
+        this.glowLight.intensity = 1.5 + this.scale * 1.0;
+
+        // ── Sparks ───────────────────────────────────────────────────
         this._updateSparks(deltaTime);
     }
 
     _updateSparks(deltaTime) {
         const positions = this.sparks.geometry.attributes.position.array;
         const alphas    = this.sparks.geometry.attributes.aAlpha.array;
-        const time      = this.uniforms.uTime.value;
+        const time      = this.time;
 
         for (let i = 0; i < SPARK_COUNT; i++) {
             const sd = this.sparkData[i];
 
-            // Orbit around the sphere
             sd.theta += sd.speed * deltaTime;
 
-            // Radial breathing
-            const r = (sd.baseR + Math.sin(time * 1.5 + sd.phase) * 0.15 + sd.drift * Math.sin(time * 0.7 + sd.phase)) * this.scale;
+            // Radial breathing (no manual scale — group handles it)
+            const r = sd.baseR + Math.sin(time * 1.5 + sd.phase) * 0.15
+                               + sd.drift * Math.sin(time * 0.7 + sd.phase);
 
             const sinPhi = Math.sin(sd.phi);
             const cosPhi = Math.cos(sd.phi);
@@ -407,8 +640,8 @@ export class NeutronCore {
             positions[i * 3 + 1] = r * sinPhi * Math.sin(sd.theta);
             positions[i * 3 + 2] = r * cosPhi;
 
-            // Twinkle alpha
-            alphas[i] = sd.baseAlpha * (0.5 + 0.5 * Math.sin(time * 3.0 + sd.phase));
+            // Twinkle
+            alphas[i] = sd.baseAlpha * (0.4 + 0.6 * Math.sin(time * 3.0 + sd.phase));
         }
 
         this.sparks.geometry.attributes.position.needsUpdate = true;

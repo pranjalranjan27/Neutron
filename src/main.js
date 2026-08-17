@@ -45,9 +45,9 @@ scene.add(ambientLight);
 // --- Post-Processing (Bloom) ---
 const renderScene = new RenderPass(scene, camera);
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
-bloomPass.threshold = 0.3;
-bloomPass.strength = 0.7; // Controlled halo — large emissive spheres accumulate bloom
-bloomPass.radius = 0.8;
+bloomPass.threshold = 0.15;
+bloomPass.strength = 1.2; // Rich glow for runic rings + nebula
+bloomPass.radius = 1.0;
 
 const composer = new EffectComposer(renderer);
 composer.addPass(renderScene);
@@ -117,7 +117,7 @@ function updateDebugUI(gesture) {
   if (gesture.validHands === 2) {
     html += `<strong>DISTANCE:</strong> ${gesture.distance.toFixed(3)}<br>`;
   }
-  html += `<strong>SCALE:</strong> ${neutron.scale.toFixed(2)}<br>`;
+  html += `<strong>SCALE:</strong> ${neutron.scale.toFixed(2)} → ${neutron.targetScale.toFixed(2)}<br>`;
   html += `<strong>ROTATION:</strong> ${neutron.rotation.toFixed(2)}<br>`;
   html += `<hr>`;
   if (h0.active) {
