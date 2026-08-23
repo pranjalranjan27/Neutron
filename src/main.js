@@ -45,9 +45,9 @@ scene.add(ambientLight);
 // --- Post-Processing (Bloom) ---
 const renderScene = new RenderPass(scene, camera);
 const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
-bloomPass.threshold = 0.15;
-bloomPass.strength = 1.2; // Rich glow for runic rings + nebula
-bloomPass.radius = 1.0;
+bloomPass.threshold = 0.7;  // Only the brightest crack cores bloom
+bloomPass.strength = 2.0;   // Punchy but focused fissure glow
+bloomPass.radius = 0.4;     // Tight halo — no broad wash
 
 const composer = new EffectComposer(renderer);
 composer.addPass(renderScene);
